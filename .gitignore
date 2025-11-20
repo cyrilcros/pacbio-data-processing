@@ -1,5 +1,13 @@
+# bioinfo
 *.bam
 *.pbi
+
+# nextflow
+.nextflow.*
+.nextflow/
+traces/*
+
+# gemin icode assist nodejs
 node_modules
 package-lock.json
 package.json

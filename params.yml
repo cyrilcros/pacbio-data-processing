@@ -1,4 +1,5 @@
 # Input and output
 name: "pacbio_processing"
-s3_paths: "s3_paths.txt"
+s3_paths_file: "s3_paths.txt"
 outdir: "/scratch/cros/pacbio/outdir"
+trace_dir: "traces"
