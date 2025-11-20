@@ -24,41 +24,13 @@ workflow {
     extract_files(ch_s3_files)
     validate_checksums(extract_files.out)
 
-    // Filter and collect failed reports
-    validate_checksums.out.md5_check
-        .filter { tuple ->
-            def (_run_id, _assay_id, _report, status) = tuple
-            status == 'FAIL'
-        }
-        .map { tuple -> tuple[2] } // Just the report file
-        .collectFile(name: 'failed_checksums.txt', storeDir: params.outdir)
-
-    // View results
-    validate_checksums.out.md5_check.view { tuple ->
-        def (run_id, assay_id, _report, status) = tuple
-        "${status}: ${run_id} (${assay_id})"
-    }
-
-    // Filter successful runs and extract HiFi reads
-    validate_checksums.out.md5_check
-        .filter { tuple ->
-            def (_run_id, _assay_id, _report, status) = tuple
-            status == 'OK'
-        }
-        .map { tuple ->
-            def (run_id, assay_id, _report, _status) = tuple
-            [run_id, assay_id]
-        }
-        .join(validate_checksums.out.subreads)
-        .set { ch_validated_subreads }
-
-    // Extract HiFi reads
-    extract_hifi_reads(ch_validated_subreads)
+    // Extract HiFi reads from successful validations
+    extract_hifi_reads(validate_checksums.out.subreads)
 
     // View HiFi results
     extract_hifi_reads.out.view { tuple ->
-        def (run_id, assay_id, hifi_reads) = tuple
-        "HIFI: ${run_id} (${assay_id}) -> ${hifi_reads}"
+        def (meta, hifi_reads) = tuple
+        "HIFI: ${meta.run_id} (${meta.assay_id}) -> ${hifi_reads}"
     }
 }
 
@@ -71,7 +43,7 @@ process extract_files {
     tuple val(run_id), path(s3_file)
 
     output:
-    tuple val(run_id), path("data")
+    tuple val([run_id: run_id, assay_id: file("data/*.md5")[0].baseName]), path("data")
 
     script:
     """
@@ -82,54 +54,53 @@ process extract_files {
 }
 
 process validate_checksums {
-    tag "${run_id}"
+    tag "${meta}"
+    errorStrategy 'ignore'
 
     input:
-    tuple val(run_id), path(data_dir)
+    tuple val(meta), path(data_dir)
 
     output:
-    tuple val(run_id), env(ASSAY_ID), path("checksum_report.txt"), env(STATUS), emit: md5_check
-    tuple val(run_id), env(ASSAY_ID), path("data/*.metadata.xml"), path("data/*.run.metadata.xml"), path("data/*.sts.xml"), emit: run_metadata
-    tuple val(run_id), env(ASSAY_ID), path("data/*.subreads.bam"), path("data/*.subreads.bam.pbi"), path("data/*.subreadset.xml"), emit: subreads
+    tuple val(meta), path("data/*.metadata.xml"), path("data/*.run.metadata.xml"), path("data/*.sts.xml"), emit: run_metadata
+    tuple val(meta), path("data/*.subreads.bam"), path("data/*.subreads.bam.pbi"), path("data/*.subreadset.xml"), emit: subreads
 
     script:
     """
-    export STATUS="FAIL"
-    export ASSAY_ID=""
-    
-    MD5_FILE=\$(ls ${data_dir}/*.md5 2>/dev/null | head -n 1)
-    
-    if [ -z "\$MD5_FILE" ]; then
-        echo "No .md5 file found" > checksum_report.txt
-    else
-        export ASSAY_ID=\$(basename "\$MD5_FILE" .md5)
-        cd ${data_dir}
-        if md5sum -c \$(basename "\$MD5_FILE") > "\$OLDPWD/checksum_report.txt" 2>&1; then
-            export STATUS="OK"
-            
-            # Remove leading dots from hidden files after successful validation
-            for file in .*metadata.xml; do
-                if [ -f "\$file" ]; then
-                    mv "\$file" "\${file#.}"
-                fi
-            done
-        fi
+    # Check if the specific .md5 file exists
+    if [ ! -f "${data_dir}/${meta.assay_id}.md5" ]; then
+        echo "No ${meta.assay_id}.md5 file found" > checksum_report.txt
+        exit 1
     fi
+    
+    cd ${data_dir}
+    if ! md5sum -c "${meta.assay_id}.md5" > "\$OLDPWD/checksum_report.txt" 2>&1; then
+        echo "Checksum validation failed" >> "\$OLDPWD/checksum_report.txt"
+        exit 1
+    fi
+    
+    # Remove leading dots from hidden files after successful validation
+    for file in .*metadata.xml; do
+        if [ -f "\$file" ]; then
+            cp "\$file" "\${file#.}"
+        fi
+    done
+    
+    echo "All checksums passed" > "\$OLDPWD/checksum_report.txt"
     """
 }
 
 process extract_hifi_reads {
-    tag "${run_id}"
+    tag "${meta}"
     conda "bioconda::pbccs=6.4.0"
 
     input:
-    tuple val(run_id), val(assay_id), path(subreads_bam), path(subreads_pbi), path(subreadset_xml)
+    tuple val(meta), path(subreads_bam), path(subreads_pbi), path(subreadset_xml)
 
     output:
-    tuple val(run_id), val(assay_id), path("${assay_id}.hifi.bam")
+    tuple val(meta), path("${meta.assay_id}.hifi.bam")
 
     script:
     """
-    ccs ${subreads_bam} ${assay_id}.hifi.bam --min-passes 3 --min-rq 0.99
+    ccs ${subreads_bam} ${meta.assay_id}.hifi.bam --min-passes 3 --min-rq 0.99
     """
 }
