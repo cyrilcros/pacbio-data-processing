@@ -8,7 +8,7 @@ params.outdir = "results"
 
 // --- Workflow ---
 workflow {
-    // Read S3 paths from file and create channel with file objects
+    // Read S3 paths from file and create channel with URLs only
     channel
         .fromPath(params.s3_paths_file)
         .splitText()
@@ -16,15 +16,15 @@ workflow {
         .filter { line -> line && !line.startsWith('#') }
         .map { s3_path -> 
             def run_id = s3_path.replaceAll(/\.raw\.tar\.gz$/, '').split('/')[-1]
-            [run_id, file(s3_path)] 
+            [run_id, s3_path] 
         }
-        .set { ch_s3_files }
+        .set { ch_s3_urls }
 
-    // Extract files
-    extract_files(ch_s3_files)
+    // Download and extract files one at a time
+    download_and_extract(ch_s3_urls)
     
-    // Create meta map from extract_files output
-    extract_files.out
+    // Create meta map from download output
+    download_and_extract.out
         .map { tuple ->
             def (run_id, data_dir, assay_id) = tuple
             def meta = [run_id: run_id, assay_id: assay_id]
@@ -35,36 +35,58 @@ workflow {
     // Validate checksums with meta
     validate_checksums(ch_with_meta)
 
-    // Extract HiFi reads from successful validations
+    // Extract HiFi reads from successful validations (one at a time)
     extract_hifi_reads(validate_checksums.out.subreads)
 
     // View HiFi results
     extract_hifi_reads.out.hifi.view { tuple ->
-        def (meta, hifi_reads) = tuple
-        "HIFI: ${meta.run_id} (${meta.assay_id}) -> ${hifi_reads}"
+        def (meta, hifi_bam, consensusreadset) = tuple
+        "HIFI: ${meta.run_id} (${meta.assay_id}) -> ${hifi_bam.name}"
     }
 }
 
 // --- Processes ---
 
-process extract_files {
+process download_and_extract {
     tag "${run_id}"
-
+    maxForks 1  // Process only one file at a time
+    
     input:
-    tuple val(run_id), path(s3_file)
+    tuple val(run_id), val(s3_url)
 
     output:
     tuple val(run_id), path("data"), env(ASSAY_ID)
 
     script:
+    def filename = s3_url.split('/')[-1]
     """
+    echo "Downloading ${filename} for ${run_id}..."
+    
+    # Download with wget (more reliable for large files)
+    wget -O "${filename}" "${s3_url}"
+    
+    echo "Download completed. File size:"
+    ls -lh "${filename}"
+    
+    echo "Extracting ${filename}..."
     mkdir -p data
-    tar -xzf "${s3_file}"
-    find . -type f ! -name "${s3_file}" -exec mv {} data/ \\;
+    tar -xzf "${filename}"
+    find . -type f ! -name "${filename}" -exec mv {} data/ \\;
+    
+    # Clean up the downloaded archive to save space
+    rm "${filename}"
+    
+    echo "Extraction completed. Files in data:"
+    ls -la data/
     
     # Extract assay_id from .md5 file and export as environment variable
     MD5_FILE=\$(ls data/*.md5 2>/dev/null | head -n 1)
+    if [ -z "\$MD5_FILE" ]; then
+        echo "ERROR: No .md5 file found"
+        exit 1
+    fi
     export ASSAY_ID=\$(basename "\$MD5_FILE" .md5)
+    echo "Found assay_id: \$ASSAY_ID"
     """
 }
 
@@ -86,20 +108,28 @@ process validate_checksums {
         echo "No ${meta.assay_id}.md5 file found" > checksum_report.txt
         exit 1
     fi
+    
+    echo "Starting checksum validation for ${meta.assay_id}..."
+    
     # Md5sum check
     cd ${data_dir}
-    if ! md5sum -c "${meta.assay_id}.md5" > "\$OLDPWD/checksum_report.txt" 2>&1; then
-        echo "Checksum validation failed" >> "\$OLDPWD/checksum_report.txt"
+    if md5sum -c "${meta.assay_id}.md5" > ../checksum_report.txt 2>&1; then
+        cd ..
+        echo "SUCCESS: All checksums passed for ${meta.assay_id}" >> checksum_report.txt
+        
+        # Remove leading dots from hidden files after successful validation
+        cd ${data_dir}
+        for file in .*metadata.xml; do
+            if [ -f "\$file" ]; then
+                cp "\$file" "\${file#.}"
+                echo "Copied \$file to \${file#.}" >> ../checksum_report.txt
+            fi
+        done
+    else
+        cd ..
+        echo "FAILED: Checksum validation failed for ${meta.assay_id}" >> checksum_report.txt
         exit 1
     fi
-    # Remove leading dots from hidden files after successful validation
-    for file in .*metadata.xml; do
-        if [ -f "\$file" ]; then
-            cp "\$file" "\${file#.}"
-        fi
-    done
-    
-    echo "All checksums passed" >> "\$OLDPWD/checksum_report.txt"
     """
 }
 
@@ -109,6 +139,7 @@ process extract_hifi_reads {
     conda "bioconda::pbccs=6.4.0"
     publishDir "${params.outdir}/hifi_reads", mode: 'copy'
     errorStrategy 'ignore'
+    maxForks 1  // Process only one HiFi extraction at a time
 
     input:
     tuple val(meta), path(subreads_bam), path(subreads_pbi), path(subreadset_xml)
@@ -120,13 +151,10 @@ process extract_hifi_reads {
 
     script:
     """
-    echo "Starting CCS for ${meta.assay_id}"
+    echo "Starting CCS for ${meta.assay_id} (${meta.run_id})"
     echo "Input files:"
-    ls -la
-    
-    # Check if ccs command exists
-    which ccs || echo "CCS command not found"
-    
+    ls -lh
+    echo "Starting HiFi read extraction..."
     ccs \\
         --num-threads ${task.cpus} \\
         --min-passes 3 \\
@@ -137,8 +165,6 @@ process extract_hifi_reads {
         --hifi-summary-json ${meta.assay_id}.hifi_summary.json \\
         ${subreads_bam} \\
         ${meta.assay_id}.hifi_reads.ccs.bam
-        
-    # Create consensusreadset.xml if it doesn't exist
-    touch ${meta.assay_id}.ccs.consensusreadset.xml
+    echo "HiFi extraction completed for ${meta.assay_id}"
     """
 }
