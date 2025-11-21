@@ -3,28 +3,28 @@
 nextflow.enable.dsl=2
 
 // --- Input parameters ---
-params.s3_paths_file = null
+params.local_paths_file = null
 params.outdir = "results"
 
 // --- Workflow ---
 workflow {
-    // Read S3 paths from file and create channel with URLs only
+    // Read local paths from file and create channel with file paths only
     channel
-        .fromPath(params.s3_paths_file)
+        .fromPath(params.local_paths_file)
         .splitText()
         .map { line -> line.trim() }
         .filter { line -> line && !line.startsWith('#') }
-        .map { s3_path -> 
-            def run_id = s3_path.replaceAll(/\.raw\.tar\.gz$/, '').split('/')[-1]
-            [run_id, s3_path] 
+        .map { local_path -> 
+            def run_id = local_path.replaceAll(/\.raw\.tar\.gz$/, '').split('/')[-1]
+            [run_id, file(local_path)] 
         }
-        .set { ch_s3_urls }
+        .set { ch_local_files }
 
-    // Download and extract files one at a time
-    download_and_extract(ch_s3_urls)
+    // Extract files one at a time (no download needed)
+    extract_local_files(ch_local_files)
     
-    // Create meta map from download output
-    download_and_extract.out
+    // Create meta map from extract output
+    extract_local_files.out
         .map { tuple ->
             def (run_id, data_dir, assay_id) = tuple
             def meta = [run_id: run_id, assay_id: assay_id]
@@ -47,34 +47,29 @@ workflow {
 
 // --- Processes ---
 
-process download_and_extract {
+process extract_local_files {
     tag "${run_id}"
     maxForks 1  // Process only one file at a time
     
     input:
-    tuple val(run_id), val(s3_url)
+    tuple val(run_id), path(tarball)
 
     output:
     tuple val(run_id), path("data"), env(ASSAY_ID)
 
     script:
-    def filename = s3_url.split('/')[-1]
     """
-    echo "Downloading ${filename} for ${run_id}..."
+    echo "Extracting ${tarball.name} for ${run_id}..."
     
-    # Download with wget (more reliable for large files)
-    wget -O "${filename}" "${s3_url}"
+    echo "Input file size:"
+    ls -lh "${tarball}"
     
-    echo "Download completed. File size:"
-    ls -lh "${filename}"
-    
-    echo "Extracting ${filename}..."
+    # Extract the tarball
     mkdir -p data
-    tar -xzf "${filename}"
-    find . -type f ! -name "${filename}" -exec mv {} data/ \\;
+    tar -xzf "${tarball}"
     
-    # Clean up the downloaded archive to save space
-    rm "${filename}"
+    # Move all extracted files to data directory (handles nested directories)
+    find . -type f ! -name "${tarball.name}" -exec mv {} data/ \\;
     
     echo "Extraction completed. Files in data:"
     ls -la data/
