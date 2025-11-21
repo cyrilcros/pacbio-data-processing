@@ -96,11 +96,17 @@ process extract_local_files {
     # Extract and validate checksums on-the-fly using --to-command
     echo "Extracting metadata files with checksum validation..."
     
-    # First extract the .md5 file
-    tar -xzf "${tarball}" --wildcards "*\${ASSAY_ID}.md5" --strip-components=\$FOLDER_DEPTH -C metadata/
+    # First extract the .md5 file using the exact path from FIRST_FILE directory structure
+    # Example: if FIRST_FILE is "r54345U_20220413_154036/3_C03/.m54345U_220416_101341.metadata.xml"
+    # then MD5_PATH becomes "r54345U_20220413_154036/3_C03/m54345U_220416_101341.md5"
+    MD5_DIR=\$(dirname "\$FIRST_FILE")
+    MD5_PATH="\${MD5_DIR}/\${ASSAY_ID}.md5"
+    echo "Extracting .md5 file from: \$MD5_PATH"
+    
+    tar -xzf "${tarball}" --strip-components=\$FOLDER_DEPTH "\$MD5_PATH" -C metadata/
     
     if [ ! -f "metadata/\${ASSAY_ID}.md5" ]; then
-        echo "ERROR: Could not find \${ASSAY_ID}.md5 in archive"
+        echo "ERROR: Could not find \${ASSAY_ID}.md5 in archive at path: \$MD5_PATH"
         exit 1
     fi
     
