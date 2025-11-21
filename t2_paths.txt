@@ -1,6 +1,8 @@
-/g/tier2/t2arendt/platy_genome_raw_data_kevin_mutemi/MPI_Dresden/Platynereis_megalops/LAB3837_L105527/r54345U_20220413_154036-3_C03.raw.tar.gz
-/g/tier2/t2arendt/platy_genome_raw_data_kevin_mutemi/MPI_Dresden/Platynereis_megalops/LAB3837_L105527/r54345U_20220427_083038-1_A04.raw.tar.gz
-/g/tier2/t2arendt/platy_genome_raw_data_kevin_mutemi/MPI_Dresden/Platynereis_megalops/LAB3837_L105527/r54345U_20220323_125718-4_D01.raw.tar.gz
-/g/tier2/t2arendt/platy_genome_raw_data_kevin_mutemi/MPI_Dresden/Platynereis_massiliensis/LAB3340_L75179/r64046_20210716_064204-2_B01.raw.tar.gz
-/g/tier2/t2arendt/platy_genome_raw_data_kevin_mutemi/MPI_Dresden/Platynereis_dumerilii/LAB3067_L69050/r54345U_20210421_103800-2_B01.raw.tar.gz
-/g/tier2/t2arendt/platy_genome_raw_data_kevin_mutemi/MPI_Dresden/Platynereis_dumerilii/LAB3067_L69050/r64046_20210415_092050-2_B03.raw.tar.gz
+/scratch/cros
+#/scratch/cros/MPI_Dresden/Platynereis_megalops/LAB3837_L105527/r54345U_20220413_154036-3_C03.raw.tar.gz
+#/scratch/cros/MPI_Dresden/Platynereis_megalops/LAB3837_L105527/r54345U_20220427_083038-1_A04.raw.tar.gz
+#/scratch/cros/MPI_Dresden/Platynereis_megalops/LAB3837_L105527/r54345U_20220323_125718-4_D01.raw.tar.gz
+#/scratch/cros/MPI_Dresden/Platynereis_massiliensis/LAB3340_L75179/r64046_20210716_064204-2_B01.raw.tar.gz
+#/scratch/cros/MPI_Dresden/Platynereis_dumerilii/LAB3067_L69050/r54345U_20210421_103800-2_B01.raw.tar.gz
+#/scratch/cros/MPI_Dresden/Platynereis_dumerilii/LAB3067_L69050/r64046_20210415_092050-2_B03.raw.tar.gz
+/scratch/cros/r54345U_20220413_154036-3_C03.raw.tar.gz

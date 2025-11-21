@@ -40,7 +40,7 @@ workflow {
 
     // View HiFi results
     extract_hifi_reads.out.hifi.view { tuple ->
-        def (meta, hifi_bam, consensusreadset) = tuple
+        def (meta, hifi_bam, _consensusreadset) = tuple
         "HIFI: ${meta.run_id} (${meta.assay_id}) -> ${hifi_bam.name}"
     }
 }
