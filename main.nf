@@ -20,23 +20,11 @@ workflow {
         }
         .set { ch_local_files }
 
-    // Extract files one at a time (no download needed)
-    extract_local_files(ch_local_files)
-    
-    // Create meta map from extract output
-    extract_local_files.out
-        .map { tuple ->
-            def (run_id, tarball, metadata_dir, assay_id) = tuple
-            def meta = [run_id: run_id, assay_id: assay_id]
-            [meta, tarball, metadata_dir]
-        }
-        .set { ch_with_meta }
+    // Extract metadata and validate all checksums (one at a time)
+    extract_and_validate_checksums(ch_local_files)
 
-    // Validate checksums with meta
-    validate_checksums(ch_with_meta)
-
-    // Extract HiFi reads from successful validations (one at a time)
-    extract_hifi_reads(validate_checksums.out.subreads)
+    // Extract HiFi reads from validated archives (one at a time)
+    extract_hifi_reads(extract_and_validate_checksums.out.archive_with_bam)
 
     // View HiFi results
     extract_hifi_reads.out.hifi.view { tuple ->
@@ -47,26 +35,28 @@ workflow {
 
 // --- Processes ---
 
-process extract_local_files {
+process extract_and_validate_checksums {
     tag "${run_id}"
     maxForks 1  // Process only one file at a time
+    publishDir "${params.outdir}/metadata", mode: 'copy', pattern: "*.{xml,md5}"
+    errorStrategy 'ignore'
     
     input:
     tuple val(run_id), path(tarball)
 
     output:
-    tuple val(run_id), path(tarball), path("metadata"), env(ASSAY_ID)
+    tuple val(run_id), env(ASSAY_ID), path("*.metadata.xml"), path("*.run.metadata.xml"), path("*.sts.xml"), path("*.md5"), emit: metadata
+    tuple val(run_id), env(ASSAY_ID), path(tarball), env(BAM_FILENAME), emit: archive_with_bam
 
     script:
     """
     echo "Processing ${tarball.name} for ${run_id}..."
-    
     echo "Input file size:"
     ls -lh "${tarball}"
     
     # List archive contents and find first non-tmp file to infer assay_id
     echo "Listing archive contents to find assay_id..."
-    FIRST_FILE=\$(tar -tzf "${tarball}"  | grep -v 'tmp-file' | grep -v 'toarchive.txt' | grep -v '/\$' | head -n 1)
+    FIRST_FILE=\$(tar -tzf "${tarball}" | grep -v 'tmp-file' | grep -v 'toarchive.txt' | grep -v '/\$' | head -n 1)
     
     if [ -z "\$FIRST_FILE" ]; then
         echo "ERROR: No valid files found in archive"
@@ -90,135 +80,136 @@ process extract_local_files {
     export ASSAY_ID=\$(echo "\$BASENAME_CLEAN" | cut -d'.' -f1)
     echo "Detected assay_id: \$ASSAY_ID"
     
-    # Create metadata directory
-    mkdir -p metadata
+    # Extract the BAM filename for downstream processing
+    export BAM_FILENAME="\${ASSAY_ID}.subreads.bam"
+    echo "BAM filename for extraction: \$BAM_FILENAME"
     
-    # Extract only small metadata/XML files, NOT the large BAM files
-    # Extract and validate checksums on-the-fly using --to-command
-
+    # Extract .md5 file first
     TARGET_MD5="\${DIR_PATH}/\${ASSAY_ID}.md5"
-    echo "Extracting metadata files with checksum validation... \$TARGET_MD5 at depth \$FOLDER_DEPTH"
+    echo "Extracting checksum file: \$TARGET_MD5"
+    tar -xzf "${tarball}" --strip-components=\$FOLDER_DEPTH "\$TARGET_MD5"
     
-    # First extract the .md5 file
-    tar -xzf "${tarball}" --strip-components=\$FOLDER_DEPTH -C metadata/ \$TARGET_MD5 
-    
-    if [ ! -f "metadata/\${ASSAY_ID}.md5" ]; then
+    if [ ! -f "\${ASSAY_ID}.md5" ]; then
         echo "ERROR: Could not find \${ASSAY_ID}.md5 in archive"
         exit 1
     fi
     
-    echo "Contents of \${ASSAY_ID}.md5:"
-    cat "metadata/\${ASSAY_ID}.md5"
+    echo ""
+    echo "=== Checksum file contents ==="
+    cat "\${ASSAY_ID}.md5"
+    echo "=============================="
+    echo ""
     
-    # Create checksum validation script for metadata files
-    cat > validate_metadata.sh <<'SCRIPT'
-#!/bin/bash
-FILE_PATH="\$TAR_REALNAME"
-FILE_NAME=\$(basename "\$FILE_PATH")
-
-# Skip large BAM files - we keep those in the archive
-if [[ "\$FILE_NAME" == *.subreads.bam ]] || [[ "\$FILE_NAME" == *.subreads.bam.pbi ]] || [[ "\$FILE_NAME" == *.subreadset.xml ]]; then
-    echo "⊘ \$FILE_NAME: skipped (large file, kept in archive)"
-    exit 0
-fi
-
-# Skip directories
-if [ -d "\$FILE_PATH" ]; then
-    exit 0
-fi
-
-# Save stdin to file in metadata directory
-cat > "metadata/\$FILE_NAME"
-
-# Validate checksum
-EXPECTED_MD5=\$(grep "\$FILE_NAME" "metadata/\${ASSAY_ID}.md5" 2>/dev/null | awk '{print \$1}')
-
-if [ -n "\$EXPECTED_MD5" ]; then
-    ACTUAL_MD5=\$(md5sum "metadata/\$FILE_NAME" | awk '{print \$1}')
-    if [ "\$EXPECTED_MD5" = "\$ACTUAL_MD5" ]; then
-        echo "✓ \$FILE_NAME: checksum OK"
-    else
-        echo "✗ \$FILE_NAME: checksum FAILED (expected: \$EXPECTED_MD5, got: \$ACTUAL_MD5)"
+    # Validate ALL checksums (including large BAM files in archive)
+    echo "Validating ALL checksums (including files in archive)..."
+    echo ""
+    
+    VALIDATION_FAILED=0
+    
+    # Read each line from the .md5 file
+    while IFS= read -r line; do
+        # Skip empty lines
+        [ -z "\$line" ] && continue
+        
+        # Extract expected checksum and filename
+        EXPECTED_MD5=\$(echo "\$line" | awk '{print \$1}')
+        FILE_NAME=\$(echo "\$line" | awk '{print \$2}')
+        
+        # Skip if line doesn't have both checksum and filename
+        [ -z "\$EXPECTED_MD5" ] || [ -z "\$FILE_NAME" ] && continue
+        
+        # Determine if this is a large file (BAM/PBI/XML) or metadata file
+        if [[ "\$FILE_NAME" == *.subreads.bam ]] || [[ "\$FILE_NAME" == *.subreads.bam.pbi ]] || [[ "\$FILE_NAME" == *.subreadset.xml ]]; then
+            # Large file - validate from archive without extracting
+            echo "Validating (in archive): \$FILE_NAME"
+            
+            # Extract file from archive and compute checksum on-the-fly
+            ACTUAL_MD5=\$(tar -xzf "${tarball}" --strip-components=\$FOLDER_DEPTH -O "\${DIR_PATH}/\${FILE_NAME}" | md5sum | awk '{print \$1}')
+            
+            if [ "\$EXPECTED_MD5" = "\$ACTUAL_MD5" ]; then
+                echo "  ✓ Checksum OK (kept in archive)"
+            else
+                echo "  ✗ Checksum FAILED (expected: \$EXPECTED_MD5, got: \$ACTUAL_MD5)"
+                VALIDATION_FAILED=1
+            fi
+        else
+            # Metadata file - extract and validate
+            echo "Extracting and validating: \$FILE_NAME"
+            
+            # Handle hidden files (with dot prefix)
+            if [[ "\$FILE_NAME" == .* ]]; then
+                SOURCE_PATH="\${DIR_PATH}/\${FILE_NAME}"
+                # Remove leading dot for output filename
+                OUTPUT_NAME="\${FILE_NAME#.}"
+            else
+                SOURCE_PATH="\${DIR_PATH}/\${FILE_NAME}"
+                OUTPUT_NAME="\${FILE_NAME}"
+            fi
+            
+            # Extract the file
+            tar -xzf "${tarball}" --strip-components=\$FOLDER_DEPTH "\$SOURCE_PATH"
+            
+            if [ -f "\$FILE_NAME" ]; then
+                # Compute checksum
+                ACTUAL_MD5=\$(md5sum "\$FILE_NAME" | awk '{print \$1}')
+                
+                if [ "\$EXPECTED_MD5" = "\$ACTUAL_MD5" ]; then
+                    echo "  ✓ Checksum OK (extracted)"
+                    # Rename to remove dot prefix if needed
+                    if [ "\$FILE_NAME" != "\$OUTPUT_NAME" ]; then
+                        mv "\$FILE_NAME" "\$OUTPUT_NAME"
+                        echo "  → Renamed to \$OUTPUT_NAME"
+                    fi
+                else
+                    echo "  ✗ Checksum FAILED (expected: \$EXPECTED_MD5, got: \$ACTUAL_MD5)"
+                    VALIDATION_FAILED=1
+                fi
+            else
+                echo "  ✗ File not found in archive: \$FILE_NAME"
+                VALIDATION_FAILED=1
+            fi
+        fi
+        echo ""
+    done < "\${ASSAY_ID}.md5"
+    
+    # Check if validation passed
+    if [ \$VALIDATION_FAILED -eq 1 ]; then
+        echo "ERROR: Checksum validation failed for one or more files"
         exit 1
     fi
-fi
-SCRIPT
     
-    chmod +x validate_metadata.sh
+    echo "SUCCESS: All checksums validated"
+    echo ""
     
-    # Stream extract metadata files with validation
-    tar -xzf "${tarball}" --strip-components=\$FOLDER_DEPTH --to-command='./validate_metadata.sh' 2>&1 | grep -E '^(✓|✗|⊘)'
+    # Verify required metadata files exist
+    echo "Verifying required metadata files..."
+    
+    REQUIRED_FILES=(
+        "\${ASSAY_ID}.metadata.xml"
+        "\${ASSAY_ID}.run.metadata.xml"
+        "\${ASSAY_ID}.sts.xml"
+        "\${ASSAY_ID}.md5"
+    )
+    
+    for file in "\${REQUIRED_FILES[@]}"; do
+        if [ ! -f "\$file" ]; then
+            echo "ERROR: Missing required file: \$file"
+            exit 1
+        fi
+        echo "  ✓ \$file"
+    done
     
     echo ""
-    echo "Metadata extraction completed. Files:"
-    ls -la metadata/
-    
-    echo "Final assay_id: \$ASSAY_ID"
-    echo "Large BAM files remain compressed in: ${tarball}"
-    """
-}
-
-process validate_checksums {
-    tag "${meta.run_id}"
-    errorStrategy 'ignore'
-
-    input:
-    tuple val(meta), path(tarball), path(metadata_dir)
-
-    output:
-    tuple val(meta), path("${meta.assay_id}.metadata.xml"), path("${meta.assay_id}.run.metadata.xml"), path("${meta.assay_id}.sts.xml"), path("checksum_report.txt"), emit: run_metadata
-    tuple val(meta), path(tarball), emit: subreads
-
-    script:
-    """
-    # Checksums were already validated during extraction
-    # This process organizes the metadata files with proper naming
-    
-    echo "Organizing files for ${meta.assay_id}..." > checksum_report.txt
-    echo "Checksums were validated during extraction" >> checksum_report.txt
-    echo "" >> checksum_report.txt
-    
-    # The hidden files in metadata_dir need to have the dot prefix for these two:
-    # .${meta.assay_id}.metadata.xml -> ${meta.assay_id}.metadata.xml
-    # .${meta.assay_id}.run.metadata.xml -> ${meta.assay_id}.run.metadata.xml
-    
-    # Copy metadata.xml (hidden file with dot)
-    if [ -f "${metadata_dir}/.${meta.assay_id}.metadata.xml" ]; then
-        cp "${metadata_dir}/.${meta.assay_id}.metadata.xml" "${meta.assay_id}.metadata.xml"
-        echo "✓ Found and renamed .${meta.assay_id}.metadata.xml" >> checksum_report.txt
-    else
-        echo "ERROR: Missing .${meta.assay_id}.metadata.xml" >> checksum_report.txt
-        exit 1
-    fi
-    
-    # Copy run.metadata.xml (hidden file with dot)
-    if [ -f "${metadata_dir}/.${meta.assay_id}.run.metadata.xml" ]; then
-        cp "${metadata_dir}/.${meta.assay_id}.run.metadata.xml" "${meta.assay_id}.run.metadata.xml"
-        echo "✓ Found and renamed .${meta.assay_id}.run.metadata.xml" >> checksum_report.txt
-    else
-        echo "ERROR: Missing .${meta.assay_id}.run.metadata.xml" >> checksum_report.txt
-        exit 1
-    fi
-    
-    # Copy sts.xml (not hidden)
-    if [ -f "${metadata_dir}/${meta.assay_id}.sts.xml" ]; then
-        cp "${metadata_dir}/${meta.assay_id}.sts.xml" "${meta.assay_id}.sts.xml"
-        echo "✓ Found ${meta.assay_id}.sts.xml" >> checksum_report.txt
-    else
-        echo "ERROR: Missing ${meta.assay_id}.sts.xml" >> checksum_report.txt
-        exit 1
-    fi
-    
-    echo "" >> checksum_report.txt
-    echo "SUCCESS: All metadata files organized for ${meta.assay_id}" >> checksum_report.txt
-    echo "Large files (.subreads.bam, .subreads.bam.pbi, .subreadset.xml) remain in archive: ${tarball}" >> checksum_report.txt
-    
-    ls -lh >> checksum_report.txt
+    echo "Final metadata files:"
+    ls -lh *.xml *.md5
+    echo ""
+    echo "Large BAM files remain in archive: ${tarball}"
+    echo "BAM filename for extraction: \$BAM_FILENAME"
     """
 }
 
 process extract_hifi_reads {
-    tag "${meta.run_id}"
+    tag "${run_id}-${assay_id}"
     label 'pacbio_ccs'
     conda "bioconda::pbccs=6.4.0"
     publishDir "${params.outdir}/hifi_reads", mode: 'copy'
@@ -226,16 +217,16 @@ process extract_hifi_reads {
     maxForks 1  // Process only one HiFi extraction at a time
 
     input:
-    tuple val(meta), path(tarball)
+    tuple val(run_id), val(assay_id), path(tarball), val(bam_filename)
 
     output:
-    tuple val(meta), path("${meta.assay_id}.hifi_reads.ccs.bam"), path("${meta.assay_id}.ccs.consensusreadset.xml"), emit: hifi, optional: true
-    tuple val(meta), path("${meta.assay_id}.ccs.log"), emit: log, optional: true
-    tuple val(meta), path("${meta.assay_id}.ccs_reports.json"), path("${meta.assay_id}.hifi_summary.json"), emit: summary, optional: true
+    tuple val([run_id: run_id, assay_id: assay_id]), path("${assay_id}.hifi_reads.ccs.bam"), path("${assay_id}.ccs.consensusreadset.xml"), emit: hifi, optional: true
+    tuple val([run_id: run_id, assay_id: assay_id]), path("${assay_id}.ccs.log"), emit: log, optional: true
+    tuple val([run_id: run_id, assay_id: assay_id]), path("${assay_id}.ccs_reports.json"), path("${assay_id}.hifi_summary.json"), emit: summary, optional: true
 
     script:
     """
-    echo "Starting CCS for ${meta.assay_id} (${meta.run_id})"
+    echo "Starting CCS for ${assay_id} (${run_id})"
     echo "Archive size:"
     ls -lh ${tarball}
     
@@ -249,7 +240,7 @@ process extract_hifi_reads {
     echo "Extracting subreads BAM files from archive..."
     tar -xzf "${tarball}" \\
         --strip-components=\$FOLDER_DEPTH \\
-        --wildcards "*${meta.assay_id}.subreads.bam" "*${meta.assay_id}.subreads.bam.pbi" "*${meta.assay_id}.subreadset.xml"
+        --wildcards "*${assay_id}.subreads.bam" "*${assay_id}.subreads.bam.pbi" "*${assay_id}.subreadset.xml"
     
     echo "Extracted files:"
     ls -lh
@@ -260,12 +251,12 @@ process extract_hifi_reads {
         --min-passes 3 \\
         --min-rq 0.99 \\
         --log-level INFO \\
-        --log-file ${meta.assay_id}.ccs.log \\
-        --report-json ${meta.assay_id}.ccs_reports.json \\
-        --hifi-summary-json ${meta.assay_id}.hifi_summary.json \\
-        ${meta.assay_id}.subreads.bam \\
-        ${meta.assay_id}.hifi_reads.ccs.bam
+        --log-file ${assay_id}.ccs.log \\
+        --report-json ${assay_id}.ccs_reports.json \\
+        --hifi-summary-json ${assay_id}.hifi_summary.json \\
+        ${assay_id}.subreads.bam \\
+        ${assay_id}.hifi_reads.ccs.bam
     
-    echo "HiFi extraction completed for ${meta.assay_id}"
+    echo "HiFi extraction completed for ${assay_id}"
     """
 }
