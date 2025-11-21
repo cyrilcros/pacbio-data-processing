@@ -66,7 +66,7 @@ process extract_local_files {
     
     # List archive contents and find first non-tmp file to infer assay_id
     echo "Listing archive contents to find assay_id..."
-    FIRST_FILE=\$(tar -tzf "${tarball}" | grep -v 'tmp-file|toarchive.txt' | grep -v '/\$' | head -n 1)
+    FIRST_FILE=\$(tar -tzf "${tarball}" | grep -v 'tmp-file' | grep -v 'toarchive.txt' | grep -v '/\$' | head -n 1)
     
     if [ -z "\$FIRST_FILE" ]; then
         echo "ERROR: No valid files found in archive"
