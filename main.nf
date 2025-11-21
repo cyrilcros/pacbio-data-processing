@@ -66,7 +66,7 @@ process extract_local_files {
     
     # List archive contents and find first non-tmp file to infer assay_id
     echo "Listing archive contents to find assay_id..."
-    FIRST_FILE=\$(tar -tzf "${tarball}" | grep -v 'tmp-file|toarchive.txt' | grep -v '/\$' | head -n 1)
+    FIRST_FILE=\$(tar -tzf "${tarball}"  | grep -v 'tmp-file' | grep -v 'toarchive.txt' | grep -v '/\$' | head -n 1)
     
     if [ -z "\$FIRST_FILE" ]; then
         echo "ERROR: No valid files found in archive"
@@ -78,6 +78,7 @@ process extract_local_files {
     # Extract basename and determine folder depth
     BASENAME=\$(basename "\$FIRST_FILE")
     FOLDER_DEPTH=\$(echo "\$FIRST_FILE" | tr -cd '/' | wc -c)
+    DIR_PATH=\$(dirname "\$FIRST_FILE")
     
     echo "Basename: \$BASENAME"
     echo "Folder depth: \$FOLDER_DEPTH"
@@ -94,10 +95,12 @@ process extract_local_files {
     
     # Extract only small metadata/XML files, NOT the large BAM files
     # Extract and validate checksums on-the-fly using --to-command
-    echo "Extracting metadata files with checksum validation..."
+
+    TARGET_MD5="\${DIR_PATH}/\${ASSAY_ID}.md5"
+    echo "Extracting metadata files with checksum validation... \$TARGET_MD5 at depth \$FOLDER_DEPTH"
     
     # First extract the .md5 file
-    tar -xzf "${tarball}" --wildcards "*\${ASSAY_ID}.md5" --strip-components=\$FOLDER_DEPTH -C metadata/
+    tar -xzf "${tarball}" --strip-components=\$FOLDER_DEPTH -C metadata/ \$TARGET_MD5 
     
     if [ ! -f "metadata/\${ASSAY_ID}.md5" ]; then
         echo "ERROR: Could not find \${ASSAY_ID}.md5 in archive"
