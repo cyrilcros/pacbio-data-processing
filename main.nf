@@ -37,9 +37,7 @@ workflow {
 
 process extract_and_validate_checksums {
     tag "${run_id}"
-    maxForks 1  // Process only one file at a time
-    publishDir "${params.outdir}/metadata", mode: 'copy', pattern: "*.{xml,md5}"
-    errorStrategy 'ignore'
+    label 'small_job'
     
     input:
     tuple val(run_id), path(tarball)
@@ -220,9 +218,9 @@ process extract_hifi_reads {
     tuple val(run_id), val(assay_id), path(tarball), val(bam_filename)
 
     output:
-    tuple val([run_id: run_id, assay_id: assay_id]), path("${assay_id}.hifi_reads.ccs.bam"), path("${assay_id}.ccs.consensusreadset.xml"), emit: hifi, optional: true
-    tuple val([run_id: run_id, assay_id: assay_id]), path("${assay_id}.ccs.log"), emit: log, optional: true
-    tuple val([run_id: run_id, assay_id: assay_id]), path("${assay_id}.ccs_reports.json"), path("${assay_id}.hifi_summary.json"), emit: summary, optional: true
+    tuple path("${assay_id}.hifi_reads.ccs.bam"), path("${assay_id}.ccs.consensusreadset.xml"), emit: hifi, optional: true
+    tuple path("${assay_id}.ccs.log"), emit: log, optional: true
+    tuple path("${assay_id}.ccs_reports.json"), path("${assay_id}.hifi_summary.json"), emit: summary, optional: true
 
     script:
     """
