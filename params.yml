@@ -1,4 +1,4 @@
 name: "pacbio_processing"
-local_paths_file: "scratch_subreads_files.tsv"
+local_paths_file: "scratch_subreads_files.csv"
 outdir: "/scratch/cros/pacbio_outs/"
 trace_dir: "traces"
