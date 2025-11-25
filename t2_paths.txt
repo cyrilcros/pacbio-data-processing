@@ -4,4 +4,3 @@
 /scratch/cros/MPI_Dresden/Platynereis_massiliensis/LAB3340_L75179/r64046_20210716_064204-2_B01.raw.tar.gz
 /scratch/cros/MPI_Dresden/Platynereis_dumerilii/LAB3067_L69050/r54345U_20210421_103800-2_B01.raw.tar.gz
 /scratch/cros/MPI_Dresden/Platynereis_dumerilii/LAB3067_L69050/r64046_20210415_092050-2_B03.raw.tar.gz
-/scratch/cros/r54345U_20220413_154036-3_C03.raw.tar.gz

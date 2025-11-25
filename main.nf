@@ -209,7 +209,6 @@ process extract_and_validate_checksums {
 process extract_hifi_reads {
     tag "${run_id}-${assay_id}"
     label 'pacbio_ccs'
-    conda "bioconda::pbccs=6.4.0"
     publishDir "${params.outdir}/hifi_reads", mode: 'copy'
     errorStrategy 'ignore'
     maxForks 1  // Process only one HiFi extraction at a time

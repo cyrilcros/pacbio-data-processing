@@ -1,5 +1,4 @@
-# Input and output
 name: "pacbio_processing"
-local_paths_file: "t2_paths.txt"
-outdir: "/scratch/cros/pacbio/"
+local_paths_file: "scratch_subreads_files.tsv"
+outdir: "/scratch/cros/pacbio_outs/"
 trace_dir: "traces"
