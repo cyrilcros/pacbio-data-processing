@@ -87,7 +87,6 @@ workflow {
     // 1. Create Channel from TSV
     ch_subreads = channel.fromPath(params.local_paths_file)
         .splitCsv(header: true)
-        .view {it -> it}
         .map { row ->
             def meta = [
                 id: row.sample,
