@@ -146,9 +146,10 @@ process RUN_ISOSEQ_PIPELINE {
     isoseq3 cluster ${prefix}.flnc.bam ${prefix}.clustered.bam \
         --verbose --use-qvs --num-threads ${task.cpus}
 
-    # 6. Polish
-    isoseq3 polish ${prefix}.clustered.bam ${prefix}.polished.bam \
-        --verbose --num-threads ${task.cpus}
+    # 6. Convert to FASTA (Replaces Polish)
+    # The clustered BAM contains the high-quality transcripts.
+    bam2fasta -o ${prefix}.hq ${prefix}.clustered.bam -c 0
+
     """
 }
 
